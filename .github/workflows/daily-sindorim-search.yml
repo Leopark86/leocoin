@@ -24,10 +24,26 @@ jobs:
       - name: 의존성 설치
         run: pip install -r requirements.txt
 
+      - name: 오늘 날짜 설정
+        run: echo "TODAY=$(date '+%Y-%m-%d')" >> $GITHUB_ENV
+
       - name: 신도림 단지 언급 검색
         env:
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
         run: |
           python sindorim_search.py \
             --keywords "신도림4차,신도림이편한세상,신도림대장" \
-            --max-results 50
+            --max-results 50 | tee search_result.txt
+
+      - name: 검색 결과 이메일 발송
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.naver.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.NAVER_EMAIL_USERNAME }}
+          password: ${{ secrets.NAVER_EMAIL_PASSWORD }}
+          subject: "[신도림 YouTube 검색] ${{ env.TODAY }} 결과"
+          to: parkwons@naver.com
+          from: ${{ secrets.NAVER_EMAIL_USERNAME }}@naver.com
+          body: file://search_result.txt
