@@ -4,7 +4,9 @@
 YouTube 영상의 자막/트랜스크립트에서 지정 키워드가 나오는
 영상과 해당 타임스탬프를 검색합니다.
 
-기본 키워드: 신도림4차, 신도림이편한세상, 신도림대장
+YouTube 검색어(query)와 트랜스크립트 검색어(transcript_keyword)를 분리해서
+- YouTube 검색: "신도림4차" 등 아파트 단지명으로 관련 영상 수집
+- 트랜스크립트: 자막에서 실제로 언급되는 단어("4차", "이편한세상" 등)로 매칭
 
 사용법:
     # 기본 키워드 3개로 자동 검색 (GitHub Actions 기본 모드)
@@ -37,8 +39,13 @@ from youtube_transcript_api._errors import VideoUnavailable
 
 load_dotenv()
 
-# 기본 검색 키워드 목록
-DEFAULT_KEYWORDS = ["신도림4차", "신도림이편한세상", "신도림대장"]
+# YouTube 검색어  →  트랜스크립트에서 찾을 키워드 목록 (공백·표기 변형 대응)
+KEYWORD_MAP: dict[str, list[str]] = {
+    "신도림4차":      ["신도림 4차", "신도림4차", "4차"],
+    "신도림이편한세상": ["이편한세상", "e편한세상", "신도림 e편한세상", "신도림이편한세상"],
+    "신도림대장":     ["신도림 대장", "신도림대장", "대장아파트", "구로 대장"],
+}
+DEFAULT_KEYWORDS = list(KEYWORD_MAP.keys())
 
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")
 TRANSCRIPT_LANGUAGES = ["ko", "ko-KR", "en"]  # 한국어 우선, 영어 fallback
@@ -50,6 +57,7 @@ class Mention:
 
     timestamp_sec: float
     text: str
+    matched_keyword: str  # 실제로 매칭된 트랜스크립트 키워드
 
     @property
     def timestamp_str(self) -> str:
@@ -75,7 +83,7 @@ class VideoResult:
     title: str
     channel: str
     published_at: str
-    keyword: str
+    keyword: str           # YouTube 검색어 (단지명)
     mentions: list[Mention] = field(default_factory=list)
 
     @property
@@ -231,12 +239,11 @@ def get_video_info(youtube, video_ids: list[str]) -> list[dict]:
     return videos
 
 
-def find_keyword_in_transcript(video_id: str, keyword: str) -> list[Mention]:
-    """영상 트랜스크립트에서 키워드가 나오는 타임스탬프 목록 반환"""
+def find_keywords_in_transcript(video_id: str, keywords: list[str]) -> list[Mention]:
+    """영상 트랜스크립트에서 키워드 목록 중 하나라도 나오는 타임스탬프 반환"""
     try:
         transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
 
-        # 한국어 자막 우선 탐색
         transcript = None
         for lang in TRANSCRIPT_LANGUAGES:
             try:
@@ -245,7 +252,6 @@ def find_keyword_in_transcript(video_id: str, keyword: str) -> list[Mention]:
             except NoTranscriptFound:
                 continue
 
-        # 자동 생성 자막 시도
         if transcript is None:
             try:
                 transcript = transcript_list.find_generated_transcript(
@@ -262,13 +268,16 @@ def find_keyword_in_transcript(video_id: str, keyword: str) -> list[Mention]:
         mentions = []
         for entry in entries:
             text = entry.get("text", "")
-            if keyword in text:
-                mentions.append(
-                    Mention(
-                        timestamp_sec=entry["start"],
-                        text=text.strip(),
+            for kw in keywords:
+                if kw in text:
+                    mentions.append(
+                        Mention(
+                            timestamp_sec=entry["start"],
+                            text=text.strip(),
+                            matched_keyword=kw,
+                        )
                     )
-                )
+                    break  # 한 문장에 여러 키워드 중복 방지
         return mentions
 
     except TranscriptsDisabled:
@@ -281,10 +290,11 @@ def find_keyword_in_transcript(video_id: str, keyword: str) -> list[Mention]:
 
 def search_keyword_mentions(
     video_list: list[dict],
-    keyword: str,
+    query_keyword: str,
+    transcript_keywords: list[str],
     delay: float = 0.5,
 ) -> list[VideoResult]:
-    """영상 목록에서 단일 키워드 언급을 검색하고 결과 반환"""
+    """영상 목록에서 트랜스크립트 키워드 언급을 검색하고 결과 반환"""
     results = []
     total = len(video_list)
 
@@ -293,7 +303,7 @@ def search_keyword_mentions(
         title = video["title"]
         print(f"  [{idx:3d}/{total}] {title[:50]}", end="", flush=True)
 
-        mentions = find_keyword_in_transcript(video_id, keyword)
+        mentions = find_keywords_in_transcript(video_id, transcript_keywords)
 
         if mentions:
             result = VideoResult(
@@ -301,7 +311,7 @@ def search_keyword_mentions(
                 title=title,
                 channel=video["channel"],
                 published_at=video["published_at"],
-                keyword=keyword,
+                keyword=query_keyword,
                 mentions=mentions,
             )
             results.append(result)
@@ -315,32 +325,40 @@ def search_keyword_mentions(
     return results
 
 
-def print_results(results: list[VideoResult], keyword: str) -> None:
-    """단일 키워드 검색 결과 출력"""
-    if not results:
-        print(f"  '{keyword}' 언급 없음\n")
-        return
+def print_results(
+    query_keyword: str,
+    video_list: list[dict],
+    mention_results: list[VideoResult],
+) -> None:
+    """단일 키워드의 YouTube 검색 영상 목록 + 트랜스크립트 언급 결과 출력"""
+    print(f"\n  [ YouTube 검색 영상 목록: '{query_keyword}' ({len(video_list)}개) ]")
+    for i, v in enumerate(video_list, 1):
+        vid_url = f"https://www.youtube.com/watch?v={v['video_id']}"
+        print(f"  {i:2d}. {v['title']}")
+        print(f"      {vid_url}")
 
-    print(f"  '{keyword}' 언급 영상: {len(results)}개\n")
-    for i, video in enumerate(results, 1):
-        print(f"  [{i}] {video.title}")
-        print(f"      채널: {video.channel}  |  날짜: {video.published_at}")
-        print(f"      URL: {video.video_url}")
-        print(f"      언급 {len(video.mentions)}회:")
-        for mention in video.mentions:
-            print(f"        {mention.timestamp_str}  →  {video.mention_url(mention)}")
-            print(f"                \"{mention.text}\"")
-        print()
+    if mention_results:
+        print(f"\n  [ 트랜스크립트 언급 영상: {len(mention_results)}개 ]")
+        for video in mention_results:
+            print(f"\n  ▶ {video.title}")
+            print(f"    채널: {video.channel}  |  날짜: {video.published_at}")
+            print(f"    영상: {video.video_url}")
+            for mention in video.mentions:
+                print(f"    {mention.timestamp_str} ({mention.matched_keyword}): {video.mention_url(mention)}")
+                print(f"           \"{mention.text}\"")
+    else:
+        print(f"\n  → 트랜스크립트에서 언급 없음\n")
 
 
 def run_keyword_search(
     youtube,
-    keyword: str,
+    query_keyword: str,
+    transcript_keywords: list[str],
     max_results: int,
     delay: float,
     channel_id: str | None = None,
     video_ids_raw: str | None = None,
-) -> list[VideoResult]:
+) -> tuple[list[dict], list[VideoResult]]:
     """키워드 하나에 대해 영상 수집 → 트랜스크립트 검색 전체 파이프라인 실행"""
     video_list = []
 
@@ -361,15 +379,17 @@ def run_keyword_search(
                 for v in ids
             ]
     else:
-        # 기본 모드: 키워드 자체를 YouTube 검색어로 사용
-        video_list = search_videos(youtube, keyword, max_results)
+        video_list = search_videos(youtube, query_keyword, max_results)
 
     if not video_list:
         print(f"  검색된 영상 없음\n")
-        return []
+        return [], []
 
     print(f"  총 {len(video_list)}개 영상 트랜스크립트 분석 중...\n")
-    return search_keyword_mentions(video_list, keyword, delay)
+    mention_results = search_keyword_mentions(
+        video_list, query_keyword, transcript_keywords, delay
+    )
+    return video_list, mention_results
 
 
 def parse_args():
@@ -380,7 +400,7 @@ def parse_args():
 기본 검색 키워드: {', '.join(DEFAULT_KEYWORDS)}
 
 예시:
-  # 기본 키워드 3개 자동 검색 (YouTube 검색 → 트랜스크립트 분석)
+  # 기본 키워드 3개 자동 검색
   python sindorim_search.py
 
   # 키워드 직접 지정
@@ -439,46 +459,33 @@ def main():
             print(f"[오류] {e}", file=sys.stderr)
             sys.exit(1)
 
-    all_results: list[VideoResult] = []
+    all_mention_results: list[VideoResult] = []
 
-    for keyword in keywords:
-        print(f"[키워드: {keyword}]")
+    for query_keyword in keywords:
+        transcript_keywords = KEYWORD_MAP.get(query_keyword, [query_keyword])
+
+        print(f"[키워드: {query_keyword}]")
+        print(f"  트랜스크립트 검색어: {', '.join(transcript_keywords)}")
         print(f"{'-' * 50}")
-        results = run_keyword_search(
+
+        video_list, mention_results = run_keyword_search(
             youtube=youtube,
-            keyword=keyword,
+            query_keyword=query_keyword,
+            transcript_keywords=transcript_keywords,
             max_results=args.max_results,
             delay=args.delay,
             channel_id=args.channel_id,
             video_ids_raw=args.video_ids,
         )
-        print_results(results, keyword)
-        all_results.extend(results)
+        print_results(query_keyword, video_list, mention_results)
+        all_mention_results.extend(mention_results)
 
-    # 전체 요약 + URL 목록
-    print(f"{'=' * 70}")
-    print(f"검색 완료 | 키워드 {len(keywords)}개 | 총 언급 영상 {len(all_results)}개")
+    # 전체 요약
+    print(f"\n{'=' * 70}")
+    print(f"검색 완료 | 키워드 {len(keywords)}개 | 트랜스크립트 언급 영상 {len(all_mention_results)}개")
     for kw in keywords:
-        count = sum(1 for r in all_results if r.keyword == kw)
+        count = sum(1 for r in all_mention_results if r.keyword == kw)
         print(f"  - {kw}: {count}개 영상")
-
-    if all_results:
-        print(f"\n{'=' * 70}")
-        print("[ 언급 영상 URL 전체 목록 ]")
-        print(f"{'=' * 70}")
-        for kw in keywords:
-            kw_results = [r for r in all_results if r.keyword == kw]
-            if not kw_results:
-                continue
-            print(f"\n▶ {kw} ({len(kw_results)}개)")
-            for video in kw_results:
-                print(f"  제목  : {video.title}")
-                print(f"  채널  : {video.channel}  |  날짜: {video.published_at}")
-                print(f"  영상  : {video.video_url}")
-                for mention in video.mentions:
-                    print(f"  {mention.timestamp_str} : {video.mention_url(mention)}")
-                print()
-
     print(f"{'=' * 70}\n")
 
 
