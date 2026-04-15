@@ -1,12 +1,22 @@
 """
-신도림 YouTube 언급 검색기
+신도림 단지 YouTube 언급 검색기
 
-YouTube 영상의 자막/트랜스크립트에서 '신도림' 키워드가 나오는
+YouTube 영상의 자막/트랜스크립트에서 지정 키워드가 나오는
 영상과 해당 타임스탬프를 검색합니다.
 
+기본 키워드: 신도림4차, 신도림이편한세상, 신도림대장
+
 사용법:
-    python sindorim_search.py --query "검색어" --max-results 20
+    # 기본 키워드 3개로 자동 검색 (GitHub Actions 기본 모드)
+    python sindorim_search.py
+
+    # 키워드 직접 지정
+    python sindorim_search.py --keywords "신도림4차,신도림이편한세상"
+
+    # 특정 채널 전체 영상에서 검색
     python sindorim_search.py --channel-id UCxxxxxxxx
+
+    # 특정 영상 ID 목록에서 검색
     python sindorim_search.py --video-ids "id1,id2,id3"
 """
 
@@ -27,7 +37,9 @@ from youtube_transcript_api._errors import VideoUnavailable
 
 load_dotenv()
 
-KEYWORD = "신도림"
+# 기본 검색 키워드 목록
+DEFAULT_KEYWORDS = ["신도림4차", "신도림이편한세상", "신도림대장"]
+
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")
 TRANSCRIPT_LANGUAGES = ["ko", "ko-KR", "en"]  # 한국어 우선, 영어 fallback
 
@@ -63,6 +75,7 @@ class VideoResult:
     title: str
     channel: str
     published_at: str
+    keyword: str
     mentions: list[Mention] = field(default_factory=list)
 
     @property
@@ -97,7 +110,6 @@ def search_videos(youtube, query: str, max_results: int = 50) -> list[dict]:
     while len(videos) < max_results:
         batch = min(50, max_results - len(videos))
         try:
-            from googleapiclient.errors import HttpError
             response = (
                 youtube.search()
                 .list(
@@ -133,14 +145,13 @@ def search_videos(youtube, query: str, max_results: int = 50) -> list[dict]:
 
 def get_channel_videos(youtube, channel_id: str, max_results: int = 200) -> list[dict]:
     """채널의 전체 영상 목록 조회"""
-    # 채널의 업로드 재생목록 ID 획득
     try:
         channel_resp = (
             youtube.channels()
             .list(part="contentDetails,snippet", id=channel_id)
             .execute()
         )
-    except HttpError as e:
+    except Exception as e:
         print(f"[오류] 채널 정보 조회 실패: {e}", file=sys.stderr)
         return []
 
@@ -169,7 +180,7 @@ def get_channel_videos(youtube, channel_id: str, max_results: int = 200) -> list
                 )
                 .execute()
             )
-        except HttpError as e:
+        except Exception as e:
             print(f"[오류] 재생목록 조회 실패: {e}", file=sys.stderr)
             break
 
@@ -203,7 +214,7 @@ def get_video_info(youtube, video_ids: list[str]) -> list[dict]:
                 .list(part="snippet", id=",".join(batch_ids))
                 .execute()
             )
-        except HttpError as e:
+        except Exception as e:
             print(f"[오류] 영상 정보 조회 실패: {e}", file=sys.stderr)
             continue
 
@@ -220,7 +231,7 @@ def get_video_info(youtube, video_ids: list[str]) -> list[dict]:
     return videos
 
 
-def find_keyword_in_transcript(video_id: str, keyword: str = KEYWORD) -> list[Mention]:
+def find_keyword_in_transcript(video_id: str, keyword: str) -> list[Mention]:
     """영상 트랜스크립트에서 키워드가 나오는 타임스탬프 목록 반환"""
     try:
         transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
@@ -241,7 +252,6 @@ def find_keyword_in_transcript(video_id: str, keyword: str = KEYWORD) -> list[Me
                     TRANSCRIPT_LANGUAGES
                 )
             except NoTranscriptFound:
-                # 모든 사용 가능한 트랜스크립트 중 첫 번째 사용
                 all_transcripts = list(transcript_list)
                 if all_transcripts:
                     transcript = all_transcripts[0]
@@ -269,19 +279,19 @@ def find_keyword_in_transcript(video_id: str, keyword: str = KEYWORD) -> list[Me
         return []
 
 
-def search_sindorim_mentions(
+def search_keyword_mentions(
     video_list: list[dict],
-    keyword: str = KEYWORD,
+    keyword: str,
     delay: float = 0.5,
 ) -> list[VideoResult]:
-    """영상 목록에서 키워드 언급을 검색하고 결과 반환"""
+    """영상 목록에서 단일 키워드 언급을 검색하고 결과 반환"""
     results = []
     total = len(video_list)
 
     for idx, video in enumerate(video_list, 1):
         video_id = video["video_id"]
         title = video["title"]
-        print(f"  [{idx:3d}/{total}] 검색 중: {title[:50]}", end="", flush=True)
+        print(f"  [{idx:3d}/{total}] {title[:50]}", end="", flush=True)
 
         mentions = find_keyword_in_transcript(video_id, keyword)
 
@@ -291,10 +301,11 @@ def search_sindorim_mentions(
                 title=title,
                 channel=video["channel"],
                 published_at=video["published_at"],
+                keyword=keyword,
                 mentions=mentions,
             )
             results.append(result)
-            print(f" → {len(mentions)}개 언급 발견")
+            print(f" → {len(mentions)}회 언급")
         else:
             print(" → 없음")
 
@@ -304,81 +315,105 @@ def search_sindorim_mentions(
     return results
 
 
-def print_results(results: list[VideoResult], keyword: str = KEYWORD) -> None:
-    """검색 결과 출력"""
+def print_results(results: list[VideoResult], keyword: str) -> None:
+    """단일 키워드 검색 결과 출력"""
     if not results:
-        print(f"\n'{keyword}' 언급을 찾을 수 없었습니다.")
+        print(f"  '{keyword}' 언급 없음\n")
         return
 
-    print(f"\n{'=' * 70}")
-    print(f"'{keyword}' 언급 영상: 총 {len(results)}개")
-    print(f"{'=' * 70}\n")
-
+    print(f"  '{keyword}' 언급 영상: {len(results)}개\n")
     for i, video in enumerate(results, 1):
-        print(f"[{i}] {video.title}")
-        print(f"    채널: {video.channel}  |  날짜: {video.published_at}")
-        print(f"    URL: {video.video_url}")
-        print(f"    언급 {len(video.mentions)}회:")
+        print(f"  [{i}] {video.title}")
+        print(f"      채널: {video.channel}  |  날짜: {video.published_at}")
+        print(f"      URL: {video.video_url}")
+        print(f"      언급 {len(video.mentions)}회:")
         for mention in video.mentions:
-            print(
-                f"      {mention.timestamp_str}  →  {video.mention_url(mention)}"
-            )
-            print(f"              \"{mention.text}\"")
+            print(f"        {mention.timestamp_str}  →  {video.mention_url(mention)}")
+            print(f"                \"{mention.text}\"")
         print()
+
+
+def run_keyword_search(
+    youtube,
+    keyword: str,
+    max_results: int,
+    delay: float,
+    channel_id: str | None = None,
+    video_ids_raw: str | None = None,
+) -> list[VideoResult]:
+    """키워드 하나에 대해 영상 수집 → 트랜스크립트 검색 전체 파이프라인 실행"""
+    video_list = []
+
+    if channel_id:
+        video_list = get_channel_videos(youtube, channel_id, max_results)
+    elif video_ids_raw:
+        ids = [v.strip() for v in video_ids_raw.split(",") if v.strip()]
+        if youtube:
+            video_list = get_video_info(youtube, ids)
+        else:
+            video_list = [
+                {
+                    "video_id": v,
+                    "title": f"영상 {v}",
+                    "channel": "알 수 없음",
+                    "published_at": "알 수 없음",
+                }
+                for v in ids
+            ]
+    else:
+        # 기본 모드: 키워드 자체를 YouTube 검색어로 사용
+        video_list = search_videos(youtube, keyword, max_results)
+
+    if not video_list:
+        print(f"  검색된 영상 없음\n")
+        return []
+
+    print(f"  총 {len(video_list)}개 영상 트랜스크립트 분석 중...\n")
+    return search_keyword_mentions(video_list, keyword, delay)
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description=f"YouTube 영상에서 '{KEYWORD}' 언급 타임스탬프 검색",
+        description="YouTube 영상에서 신도림 단지 언급 타임스탬프 검색",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-예시:
-  # 키워드로 영상 검색 후 신도림 언급 찾기
-  python sindorim_search.py --query "서울 지하철"
+        epilog=f"""
+기본 검색 키워드: {', '.join(DEFAULT_KEYWORDS)}
 
-  # 특정 채널 전체 영상에서 검색
+예시:
+  # 기본 키워드 3개 자동 검색 (YouTube 검색 → 트랜스크립트 분석)
+  python sindorim_search.py
+
+  # 키워드 직접 지정
+  python sindorim_search.py --keywords "신도림4차,신도림대장"
+
+  # 특정 채널 전체 영상에서 키워드 검색
   python sindorim_search.py --channel-id UCxxxxxxxxxxxxxxxxxx
 
   # 특정 영상 ID 목록에서 검색
   python sindorim_search.py --video-ids "dQw4w9WgXcQ,abc123def456"
-
-  # 최대 결과 수 지정
-  python sindorim_search.py --query "서울 여행" --max-results 100
         """,
     )
 
-    source_group = parser.add_mutually_exclusive_group(required=True)
-    source_group.add_argument(
-        "--query", "-q", type=str, help="YouTube 검색어 (영상을 검색하여 트랜스크립트 분석)"
-    )
-    source_group.add_argument(
-        "--channel-id", "-c", type=str, help="YouTube 채널 ID (채널 전체 영상 분석)"
-    )
-    source_group.add_argument(
-        "--video-ids",
-        "-v",
+    parser.add_argument(
+        "--keywords",
         type=str,
+        default=",".join(DEFAULT_KEYWORDS),
+        help=f"쉼표로 구분된 검색 키워드 목록 (기본값: {','.join(DEFAULT_KEYWORDS)})",
+    )
+    parser.add_argument(
+        "--channel-id", "-c", type=str, default=None,
+        help="YouTube 채널 ID (채널 전체 영상 분석)",
+    )
+    parser.add_argument(
+        "--video-ids", "-v", type=str, default=None,
         help="쉼표로 구분된 YouTube 영상 ID 목록",
     )
-
     parser.add_argument(
-        "--max-results",
-        "-n",
-        type=int,
-        default=50,
-        help="최대 검색 영상 수 (기본값: 50)",
+        "--max-results", "-n", type=int, default=50,
+        help="키워드당 최대 검색 영상 수 (기본값: 50)",
     )
     parser.add_argument(
-        "--keyword",
-        "-k",
-        type=str,
-        default=KEYWORD,
-        help=f"검색 키워드 (기본값: {KEYWORD})",
-    )
-    parser.add_argument(
-        "--delay",
-        type=float,
-        default=0.5,
+        "--delay", type=float, default=0.5,
         help="API 요청 간 대기 시간(초) (기본값: 0.5)",
     )
 
@@ -387,61 +422,46 @@ def parse_args():
 
 def main():
     args = parse_args()
-    keyword = args.keyword
+    keywords = [k.strip() for k in args.keywords.split(",") if k.strip()]
 
-    print(f"\n유튜브 '{keyword}' 언급 검색기")
+    print(f"\n유튜브 신도림 단지 언급 검색기")
     print(f"{'=' * 70}")
+    print(f"검색 키워드: {', '.join(keywords)}")
+    print(f"{'=' * 70}\n")
 
-    # API 키가 필요한 경우 클라이언트 초기화
-    youtube = None
-    if args.query or args.channel_id or (args.video_ids and YOUTUBE_API_KEY):
-        try:
-            youtube = build_youtube_client()
-        except ValueError as e:
-            if args.video_ids:
-                # video-ids 모드는 API 키 없이도 트랜스크립트만으로 동작 가능
-                print(f"[경고] {e}\n영상 메타데이터 없이 트랜스크립트만 검색합니다.")
-            else:
-                print(f"[오류] {e}", file=sys.stderr)
-                sys.exit(1)
-
-    # 영상 목록 수집
-    video_list = []
-
-    if args.query:
-        print(f"검색어: '{args.query}' (최대 {args.max_results}개)")
-        video_list = search_videos(youtube, args.query, args.max_results)
-        print(f"검색된 영상: {len(video_list)}개\n")
-
-    elif args.channel_id:
-        print(f"채널 ID: {args.channel_id} (최대 {args.max_results}개)")
-        video_list = get_channel_videos(youtube, args.channel_id, args.max_results)
-        print(f"채널 영상: {len(video_list)}개\n")
-
-    elif args.video_ids:
-        ids = [vid.strip() for vid in args.video_ids.split(",") if vid.strip()]
-        print(f"영상 ID {len(ids)}개 직접 지정\n")
-        if youtube:
-            video_list = get_video_info(youtube, ids)
+    try:
+        youtube = build_youtube_client()
+    except ValueError as e:
+        if args.video_ids:
+            print(f"[경고] {e}\n영상 메타데이터 없이 트랜스크립트만 검색합니다.\n")
+            youtube = None
         else:
-            # API 키 없는 경우 제목 없이 ID만으로 처리
-            video_list = [
-                {
-                    "video_id": vid,
-                    "title": f"영상 {vid}",
-                    "channel": "알 수 없음",
-                    "published_at": "알 수 없음",
-                }
-                for vid in ids
-            ]
+            print(f"[오류] {e}", file=sys.stderr)
+            sys.exit(1)
 
-    if not video_list:
-        print("검색된 영상이 없습니다.")
-        sys.exit(0)
+    all_results: list[VideoResult] = []
 
-    print(f"총 {len(video_list)}개 영상에서 '{keyword}' 언급 검색 중...\n")
-    results = search_sindorim_mentions(video_list, keyword, delay=args.delay)
-    print_results(results, keyword)
+    for keyword in keywords:
+        print(f"[키워드: {keyword}]")
+        print(f"{'-' * 50}")
+        results = run_keyword_search(
+            youtube=youtube,
+            keyword=keyword,
+            max_results=args.max_results,
+            delay=args.delay,
+            channel_id=args.channel_id,
+            video_ids_raw=args.video_ids,
+        )
+        print_results(results, keyword)
+        all_results.extend(results)
+
+    # 전체 요약
+    print(f"{'=' * 70}")
+    print(f"검색 완료 | 키워드 {len(keywords)}개 | 총 언급 영상 {len(all_results)}개")
+    for kw in keywords:
+        count = sum(1 for r in all_results if r.keyword == kw)
+        print(f"  - {kw}: {count}개 영상")
+    print(f"{'=' * 70}\n")
 
 
 if __name__ == "__main__":
