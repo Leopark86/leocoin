@@ -38,12 +38,12 @@ jobs:
       - name: 검색 결과 이메일 발송
         uses: dawidd6/action-send-mail@v3
         with:
-          server_address: smtp.naver.com
+          server_address: smtp.gmail.com
           server_port: 465
           secure: true
-          username: ${{ secrets.NAVER_EMAIL_USERNAME }}
-          password: ${{ secrets.NAVER_EMAIL_PASSWORD }}
+          username: ${{ secrets.GMAIL_USERNAME }}
+          password: ${{ secrets.GMAIL_APP_PASSWORD }}
           subject: "[신도림 YouTube 검색] ${{ env.TODAY }} 결과"
           to: parkwons@naver.com
-          from: ${{ secrets.NAVER_EMAIL_USERNAME }}@naver.com
+          from: ${{ secrets.GMAIL_USERNAME }}
           body: file://search_result.txt
