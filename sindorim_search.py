@@ -455,12 +455,30 @@ def main():
         print_results(results, keyword)
         all_results.extend(results)
 
-    # 전체 요약
+    # 전체 요약 + URL 목록
     print(f"{'=' * 70}")
     print(f"검색 완료 | 키워드 {len(keywords)}개 | 총 언급 영상 {len(all_results)}개")
     for kw in keywords:
         count = sum(1 for r in all_results if r.keyword == kw)
         print(f"  - {kw}: {count}개 영상")
+
+    if all_results:
+        print(f"\n{'=' * 70}")
+        print("[ 언급 영상 URL 전체 목록 ]")
+        print(f"{'=' * 70}")
+        for kw in keywords:
+            kw_results = [r for r in all_results if r.keyword == kw]
+            if not kw_results:
+                continue
+            print(f"\n▶ {kw} ({len(kw_results)}개)")
+            for video in kw_results:
+                print(f"  제목  : {video.title}")
+                print(f"  채널  : {video.channel}  |  날짜: {video.published_at}")
+                print(f"  영상  : {video.video_url}")
+                for mention in video.mentions:
+                    print(f"  {mention.timestamp_str} : {video.mention_url(mention)}")
+                print()
+
     print(f"{'=' * 70}\n")
 
 
