@@ -44,6 +44,6 @@ jobs:
           username: ${{ secrets.GMAIL_USERNAME }}
           password: ${{ secrets.GMAIL_APP_PASSWORD }}
           subject: "[신도림 YouTube 검색] ${{ env.TODAY }} 결과"
-          to: parkwons@naver.com
+          to: bbanset@gmail.com
           from: ${{ secrets.GMAIL_USERNAME }}
           body: file://search_result.txt
