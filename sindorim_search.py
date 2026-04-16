@@ -29,15 +29,26 @@ import time
 from dataclasses import dataclass, field
 from datetime import timedelta
 
+import requests
 from dotenv import load_dotenv
-from youtube_transcript_api import (
-    NoTranscriptFound,
-    TranscriptsDisabled,
-    YouTubeTranscriptApi,
-)
-from youtube_transcript_api._errors import VideoUnavailable
+from youtube_transcript_api import YouTubeTranscriptApi
 
 load_dotenv()
+
+# 브라우저처럼 보이는 세션 (GitHub Actions 환경의 403 차단 우회)
+def _make_http_session() -> requests.Session:
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+    })
+    return session
+
+_transcript_api = YouTubeTranscriptApi(http_client=_make_http_session())
 
 # YouTube 검색어  →  트랜스크립트에서 찾을 키워드 목록 (공백·표기 변형 대응)
 KEYWORD_MAP: dict[str, list[str]] = {
@@ -239,53 +250,48 @@ def get_video_info(youtube, video_ids: list[str]) -> list[dict]:
     return videos
 
 
-def find_keywords_in_transcript(video_id: str, keywords: list[str]) -> list[Mention]:
-    """영상 트랜스크립트에서 키워드 목록 중 하나라도 나오는 타임스탬프 반환"""
+def find_keywords_in_transcript(video_id: str, keywords: list[str]) -> tuple[list[Mention], str]:
+    """영상 트랜스크립트에서 키워드 목록 중 하나라도 나오는 타임스탬프 반환.
+
+    Returns:
+        (mentions, status)  status: "ok" | "no_transcript" | "blocked" | "error"
+    """
     try:
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        # v1.x API: 한국어 우선, 없으면 영어, 없으면 첫 번째 자막 사용
+        try:
+            fetched = _transcript_api.fetch(video_id, languages=TRANSCRIPT_LANGUAGES)
+        except Exception:
+            # 지정 언어 없으면 전체 목록에서 첫 번째 자막으로 재시도
+            tl = _transcript_api.list(video_id)
+            transcript_obj = next(iter(tl), None)
+            if transcript_obj is None:
+                return [], "no_transcript"
+            fetched = transcript_obj.fetch()
 
-        transcript = None
-        for lang in TRANSCRIPT_LANGUAGES:
-            try:
-                transcript = transcript_list.find_transcript([lang])
-                break
-            except NoTranscriptFound:
-                continue
-
-        if transcript is None:
-            try:
-                transcript = transcript_list.find_generated_transcript(
-                    TRANSCRIPT_LANGUAGES
-                )
-            except NoTranscriptFound:
-                all_transcripts = list(transcript_list)
-                if all_transcripts:
-                    transcript = all_transcripts[0]
-                else:
-                    return []
-
-        entries = transcript.fetch()
         mentions = []
-        for entry in entries:
-            text = entry.get("text", "")
+        for entry in fetched:
+            # v1.x: FetchedTranscriptSnippet 객체 (.text, .start 속성)
+            text = entry.text if hasattr(entry, "text") else entry.get("text", "")
+            start = entry.start if hasattr(entry, "start") else entry.get("start", 0)
             for kw in keywords:
                 if kw in text:
                     mentions.append(
                         Mention(
-                            timestamp_sec=entry["start"],
+                            timestamp_sec=start,
                             text=text.strip(),
                             matched_keyword=kw,
                         )
                     )
                     break  # 한 문장에 여러 키워드 중복 방지
-        return mentions
+        return mentions, "ok"
 
-    except TranscriptsDisabled:
-        return []
-    except VideoUnavailable:
-        return []
-    except Exception:
-        return []
+    except Exception as e:
+        err = str(e).lower()
+        if "403" in err or "forbidden" in err:
+            return [], "blocked"
+        if "disabled" in err or "no transcript" in err or "could not retrieve" in err:
+            return [], "no_transcript"
+        return [], "error"
 
 
 def search_keyword_mentions(
@@ -297,13 +303,15 @@ def search_keyword_mentions(
     """영상 목록에서 트랜스크립트 키워드 언급을 검색하고 결과 반환"""
     results = []
     total = len(video_list)
+    stats = {"ok": 0, "no_transcript": 0, "blocked": 0, "error": 0}
 
     for idx, video in enumerate(video_list, 1):
         video_id = video["video_id"]
         title = video["title"]
         print(f"  [{idx:3d}/{total}] {title[:50]}", end="", flush=True)
 
-        mentions = find_keywords_in_transcript(video_id, transcript_keywords)
+        mentions, status = find_keywords_in_transcript(video_id, transcript_keywords)
+        stats[status] = stats.get(status, 0) + 1
 
         if mentions:
             result = VideoResult(
@@ -317,11 +325,13 @@ def search_keyword_mentions(
             results.append(result)
             print(f" → {len(mentions)}회 언급")
         else:
-            print(" → 없음")
+            label = {"no_transcript": "자막없음", "blocked": "차단됨", "error": "오류"}.get(status, "없음")
+            print(f" → {label}")
 
         if delay > 0 and idx < total:
             time.sleep(delay)
 
+    print(f"\n  [트랜스크립트 통계] 성공:{stats['ok']} 자막없음:{stats['no_transcript']} 차단:{stats['blocked']} 오류:{stats['error']}")
     return results
 
 
