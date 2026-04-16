@@ -180,7 +180,7 @@ class TestSearchKeywordMentions(unittest.TestCase):
             return [], "no_transcript"
 
         mock_find.side_effect = side_effect
-        results = search_keyword_mentions(
+        results, stats = search_keyword_mentions(
             video_list, "신도림4차", ["신도림 4차", "신도림4차", "4차"], delay=0
         )
 
@@ -189,6 +189,8 @@ class TestSearchKeywordMentions(unittest.TestCase):
         self.assertEqual(results[1].video_id, "vid3")
         self.assertEqual(len(results[1].mentions), 2)
         self.assertTrue(all(r.keyword == "신도림4차" for r in results))
+        self.assertEqual(stats["ok"], 2)
+        self.assertEqual(stats["no_transcript"], 1)
 
     @patch("sindorim_search.find_keywords_in_transcript")
     def test_each_keyword_tagged_correctly(self, mock_find):
@@ -197,9 +199,10 @@ class TestSearchKeywordMentions(unittest.TestCase):
         ]
         for query_kw, variants in KEYWORD_MAP.items():
             mock_find.return_value = [Mention(10.0, f"{variants[0]} 언급", variants[0])], "ok"
-            results = search_keyword_mentions(video_list, query_kw, variants, delay=0)
+            results, stats = search_keyword_mentions(video_list, query_kw, variants, delay=0)
             self.assertEqual(len(results), 1)
             self.assertEqual(results[0].keyword, query_kw)
+            self.assertEqual(stats["ok"], 1)
 
 
 if __name__ == "__main__":

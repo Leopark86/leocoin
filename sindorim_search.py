@@ -299,8 +299,8 @@ def search_keyword_mentions(
     query_keyword: str,
     transcript_keywords: list[str],
     delay: float = 0.5,
-) -> list[VideoResult]:
-    """영상 목록에서 트랜스크립트 키워드 언급을 검색하고 결과 반환"""
+) -> tuple[list[VideoResult], dict]:
+    """영상 목록에서 트랜스크립트 키워드 언급을 검색하고 결과와 통계 반환"""
     results = []
     total = len(video_list)
     stats = {"ok": 0, "no_transcript": 0, "blocked": 0, "error": 0}
@@ -331,8 +331,64 @@ def search_keyword_mentions(
         if delay > 0 and idx < total:
             time.sleep(delay)
 
-    print(f"\n  [트랜스크립트 통계] 성공:{stats['ok']} 자막없음:{stats['no_transcript']} 차단:{stats['blocked']} 오류:{stats['error']}")
-    return results
+    return results, stats
+
+
+def write_email_summary(
+    keywords: list[str],
+    results_by_keyword: dict[str, tuple[list[dict], list[VideoResult], dict]],
+    output_path: str = "email_summary.txt",
+) -> None:
+    """이메일용 간결한 요약 파일 생성 (진행 로그 제외)"""
+    lines = []
+    lines.append("유튜브 신도림 단지 언급 검색 결과")
+    lines.append("=" * 60)
+    lines.append("")
+
+    for kw in keywords:
+        video_list, mention_results, stats = results_by_keyword[kw]
+        lines.append(f"▶ [{kw}]")
+        lines.append(
+            f"   YouTube 검색: {len(video_list)}개  |  "
+            f"자막 분석 성공: {stats['ok']}  자막없음: {stats['no_transcript']}  "
+            f"차단: {stats['blocked']}  오류: {stats['error']}"
+        )
+        lines.append(f"   트랜스크립트 언급: {len(mention_results)}개")
+        lines.append("")
+
+        lines.append(f"   [ YouTube 검색 영상 ({len(video_list)}개) ]")
+        for i, v in enumerate(video_list, 1):
+            lines.append(f"   {i:2d}. {v['title']}")
+            lines.append(f"       https://www.youtube.com/watch?v={v['video_id']}")
+        lines.append("")
+
+        if mention_results:
+            lines.append(f"   [ 트랜스크립트 언급 영상 ({len(mention_results)}개) ]")
+            for video in mention_results:
+                lines.append(f"   ★ {video.title}")
+                lines.append(f"     채널: {video.channel}  날짜: {video.published_at}")
+                lines.append(f"     영상: {video.video_url}")
+                for mention in video.mentions:
+                    lines.append(
+                        f"     {mention.timestamp_str} ({mention.matched_keyword})"
+                        f"  →  {video.mention_url(mention)}"
+                    )
+                    lines.append(f"          \"{mention.text}\"")
+            lines.append("")
+
+        lines.append("-" * 60)
+        lines.append("")
+
+    total_mentions = sum(
+        len(r[1]) for r in results_by_keyword.values()
+    )
+    lines.append(f"검색 완료 | 키워드 {len(keywords)}개 | 언급 영상 총 {total_mentions}개")
+    lines.append("=" * 60)
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+    print(f"\n[요약 파일 저장: {output_path}]")
 
 
 def print_results(
@@ -368,8 +424,9 @@ def run_keyword_search(
     delay: float,
     channel_id: str | None = None,
     video_ids_raw: str | None = None,
-) -> tuple[list[dict], list[VideoResult]]:
+) -> tuple[list[dict], list[VideoResult], dict]:
     """키워드 하나에 대해 영상 수집 → 트랜스크립트 검색 전체 파이프라인 실행"""
+    empty_stats = {"ok": 0, "no_transcript": 0, "blocked": 0, "error": 0}
     video_list = []
 
     if channel_id:
@@ -393,13 +450,13 @@ def run_keyword_search(
 
     if not video_list:
         print(f"  검색된 영상 없음\n")
-        return [], []
+        return [], [], empty_stats
 
     print(f"  총 {len(video_list)}개 영상 트랜스크립트 분석 중...\n")
-    mention_results = search_keyword_mentions(
+    mention_results, stats = search_keyword_mentions(
         video_list, query_keyword, transcript_keywords, delay
     )
-    return video_list, mention_results
+    return video_list, mention_results, stats
 
 
 def parse_args():
@@ -470,6 +527,7 @@ def main():
             sys.exit(1)
 
     all_mention_results: list[VideoResult] = []
+    results_by_keyword: dict[str, tuple[list[dict], list[VideoResult], dict]] = {}
 
     for query_keyword in keywords:
         transcript_keywords = KEYWORD_MAP.get(query_keyword, [query_keyword])
@@ -478,7 +536,7 @@ def main():
         print(f"  트랜스크립트 검색어: {', '.join(transcript_keywords)}")
         print(f"{'-' * 50}")
 
-        video_list, mention_results = run_keyword_search(
+        video_list, mention_results, stats = run_keyword_search(
             youtube=youtube,
             query_keyword=query_keyword,
             transcript_keywords=transcript_keywords,
@@ -489,8 +547,12 @@ def main():
         )
         print_results(query_keyword, video_list, mention_results)
         all_mention_results.extend(mention_results)
+        results_by_keyword[query_keyword] = (video_list, mention_results, stats)
 
-    # 전체 요약
+    # 이메일용 요약 파일 생성
+    write_email_summary(keywords, results_by_keyword)
+
+    # 전체 요약 (Actions 로그용)
     print(f"\n{'=' * 70}")
     print(f"검색 완료 | 키워드 {len(keywords)}개 | 트랜스크립트 언급 영상 {len(all_mention_results)}개")
     for kw in keywords:

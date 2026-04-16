@@ -31,9 +31,9 @@ jobs:
         env:
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
         run: |
-          python sindorim_search.py \
+          python -u sindorim_search.py \
             --keywords "신도림4차,신도림이편한세상,신도림대장" \
-            --max-results 50 | tee search_result.txt
+            --max-results 50
 
       - name: 검색 결과 이메일 발송
         uses: dawidd6/action-send-mail@v3
@@ -46,4 +46,4 @@ jobs:
           subject: "[신도림 YouTube 검색] ${{ env.TODAY }} 결과"
           to: bbanset@gmail.com
           from: ${{ secrets.GMAIL_USERNAME }}
-          body: file://search_result.txt
+          body: file://email_summary.txt
