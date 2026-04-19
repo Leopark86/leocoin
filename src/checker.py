@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://yeyak.seoul.go.kr"
 
 # 2026 한강공원 난지캠핑장 (시즌마다 갱신 필요)
-RSV_SVC_ID = os.getenv("RSV_SVC_ID", "S260303100832611273")
+RSV_SVC_ID = os.getenv("RSV_SVC_ID", "S260331091154779264")
 SERVICE_URL = f"{BASE_URL}/web/reservation/selectReservView.do?rsv_svc_id={RSV_SVC_ID}"
 
 TARGET_ZONE = "일반캠핑존"

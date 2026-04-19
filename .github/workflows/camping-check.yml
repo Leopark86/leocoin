@@ -33,7 +33,7 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          RSV_SVC_ID: ${{ vars.RSV_SVC_ID || 'S260303100832611273' }}
+          RSV_SVC_ID: ${{ vars.RSV_SVC_ID || 'S260331091154779264' }}
           MODE: once
           LOOK_AHEAD_WEEKS: "8"
           LOG_LEVEL: INFO
