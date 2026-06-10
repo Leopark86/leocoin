@@ -4,8 +4,13 @@ youtube-transcript-api>=0.6.2
 
 # 난지캠핑장 잔여 알리미
 playwright>=1.40.0
+
+# 텔레그램 + 스케줄러 (공통)
 python-telegram-bot>=21.0
 APScheduler>=3.10.0,<4.0
+
+# 시장 데이터 알림봇
+yfinance>=0.2.28
 
 # 공통
 python-dotenv>=1.0.0
