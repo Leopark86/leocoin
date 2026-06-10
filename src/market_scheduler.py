@@ -11,18 +11,17 @@ from .market_notifier import MarketNotifier
 logger = logging.getLogger(__name__)
 
 
-async def run_market_update(notifier: MarketNotifier) -> None:
+async def run_market_update(notifier: MarketNotifier) -> bool:
+    """시세 수집 후 텔레그램 전송. 성공 시 True, 실패 시 False 반환."""
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     logger.info("[%s] 시장 데이터 수집 시작", ts)
     try:
         prices = fetch_all()
         await notifier.send_market_update(prices)
+        return True
     except Exception as e:
         logger.error("시장 데이터 업데이트 실패: %s", e, exc_info=True)
-        try:
-            await notifier.send_error_notice(str(e))
-        except Exception:
-            pass
+        return False
 
 
 def start_market_scheduler(notifier: MarketNotifier) -> AsyncIOScheduler:

@@ -51,8 +51,8 @@ def main() -> None:
 
     if mode == "once":
         logger.info("1회 실행 모드")
-        asyncio.run(run_market_update(notifier))
-        return
+        ok = asyncio.run(run_market_update(notifier))
+        sys.exit(0 if ok else 1)
 
     logger.info("스케줄러 모드 시작 (Ctrl+C 로 종료)")
     scheduler = start_market_scheduler(notifier)
