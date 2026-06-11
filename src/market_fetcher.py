@@ -93,53 +93,80 @@ _KRX_HEADERS = {
 }
 
 
-def _fetch_kospi200_futures_krx() -> tuple[Optional[float], Optional[float]]:
-    """
-    KRX 데이터포털 API로 KOSPI200선물 최근월물 종가 조회.
-    장중(09:00~15:45 KST) 데이터만 유효, 야간선물 미지원.
-    """
-    prices: list[float] = []
-
-    # 최근 5영업일을 커버하기 위해 최대 7일 전까지 역순으로 시도
-    for delta in range(7):
-        trade_date = (date.today() - timedelta(days=delta)).strftime("%Y%m%d")
+def _krx_fetch_one_day(trade_date: str) -> Optional[float]:
+    """KRX API에서 특정 날짜 KOSPI200선물 종가 하나 반환. 실패 시 None."""
+    # 시도할 파라미터 조합 (bld 별로 필요 파라미터가 다름)
+    attempts = [
+        # 파생상품 일별시세 — 최소 파라미터
+        {"bld": "dbms/MDC/STAT/standard/MDCSTAT13001",
+         "locale": "ko_KR", "trdDd": trade_date, "mktId": "F"},
+        # 파라미터 없이 날짜만
+        {"bld": "dbms/MDC/STAT/standard/MDCSTAT13001",
+         "locale": "ko_KR", "trdDd": trade_date},
+        # 다른 bld 값 시도
+        {"bld": "dbms/MDC/STAT/standard/MDCSTAT13501",
+         "locale": "ko_KR", "trdDd": trade_date},
+    ]
+    for params in attempts:
         try:
             resp = requests.post(
                 "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd",
-                data={
-                    "bld":      "dbms/MDC/STAT/standard/MDCSTAT13001",
-                    "locale":   "ko_KR",
-                    "trdDd":    trade_date,
-                    "mktId":    "F",
-                    "prodId":   "F102",
-                    "pagePath": "/contents/MDC/MAIN/main/MDCMAIN001.cmd",
-                },
-                headers=_KRX_HEADERS,
-                timeout=10,
+                data=params, headers=_KRX_HEADERS, timeout=10,
             )
-            resp.raise_for_status()
+            if resp.status_code != 200:
+                continue
             items = resp.json().get("output", [])
             for item in items:
-                # 최근월물: 거래대금이 가장 큰 항목
-                raw = (
-                    item.get("trdPrc")
-                    or item.get("clsPrc")
-                    or item.get("CLSPRC")
-                    or item.get("closPrc")
-                )
-                if raw:
-                    prices.append(float(str(raw).replace(",", "")))
-                    break   # 첫 번째 항목(최근월물) 하나만 사용
+                # 상품명/코드로 KOSPI200선물 필터
+                nm = (item.get("prodNm") or item.get("itemNm") or "").replace(" ", "")
+                pid = item.get("prodId") or item.get("itemCode") or ""
+                if "코스피200선물" in nm or "F102" in pid or pid.startswith("101"):
+                    raw = (item.get("trdPrc") or item.get("clsPrc")
+                           or item.get("closPrc") or item.get("tddClsprc"))
+                    if raw:
+                        return float(str(raw).replace(",", ""))
+        except Exception:
+            continue
+    return None
 
-            if prices:
-                if len(prices) >= 2:
-                    break   # 이미 이틀치 확보
-                # 아직 전날치가 없으면 다음 날짜도 계속 시도
-        except Exception as e:
-            logger.warning("KRX API 호출 실패 (date=%s): %s", trade_date, e)
 
-    if len(prices) >= 2:
-        return prices[0], prices[1]
+def _fetch_kospi200_futures_krx() -> tuple[Optional[float], Optional[float]]:
+    """KRX API → FDR 순으로 KOSPI200선물 최근월물 종가 조회"""
+    # 1차: KRX 데이터포털
+    prices: list[float] = []
+    for delta in range(7):
+        trade_date = (date.today() - timedelta(days=delta)).strftime("%Y%m%d")
+        p = _krx_fetch_one_day(trade_date)
+        if p is not None:
+            prices.append(p)
+            if len(prices) >= 2:
+                break
+    if prices:
+        return (prices[0], prices[1]) if len(prices) >= 2 else (prices[0], None)
+
+    # 2차: FinanceDataReader
+    try:
+        import FinanceDataReader as fdr
+        end_dt = date.today().strftime("%Y-%m-%d")
+        start_dt = (date.today() - timedelta(days=10)).strftime("%Y-%m-%d")
+        for ticker in ["KS200F", "KSF", "F102"]:
+            try:
+                df = fdr.DataReader(ticker, start_dt, end_dt)
+                if df is not None and not df.empty:
+                    closes = df["Close"].dropna()
+                    if len(closes) >= 2:
+                        return float(closes.iloc[-1]), float(closes.iloc[-2])
+                    if len(closes) == 1:
+                        return float(closes.iloc[-1]), None
+            except Exception:
+                continue
+        logger.warning("FDR: 코스피200선물 데이터 없음")
+    except ImportError:
+        logger.warning("FinanceDataReader 미설치 — pip install finance-datareader")
+    except Exception as e:
+        logger.warning("FDR 조회 실패: %s", e)
+
+    return None, None
     if len(prices) == 1:
         return prices[0], None
     return None, None
