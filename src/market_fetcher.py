@@ -1,8 +1,10 @@
-"""시장 데이터 수집 모듈 (yfinance 기반)"""
+"""시장 데이터 수집 모듈 (yfinance + KRX API)"""
 import logging
 from dataclasses import dataclass
+from datetime import date, timedelta
 from typing import List, Optional
 
+import requests
 import yfinance as yf
 
 logger = logging.getLogger(__name__)
@@ -80,37 +82,66 @@ def _fetch_one(ticker_str: str) -> tuple[Optional[float], Optional[float]]:
     return None, None
 
 
-def _fetch_kospi200_futures_pykrx() -> tuple[Optional[float], Optional[float]]:
+_KRX_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Referer": "https://data.krx.co.kr",
+    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+}
+
+
+def _fetch_kospi200_futures_krx() -> tuple[Optional[float], Optional[float]]:
     """
-    pykrx로 KOSPI 200 선물 최근월물 종가 조회.
-    KRX 장중(09:00~15:45 KST) 데이터만 가능, 야간선물은 미지원.
+    KRX 데이터포털 API로 KOSPI200선물 최근월물 종가 조회.
+    장중(09:00~15:45 KST) 데이터만 유효, 야간선물 미지원.
     """
-    from datetime import date, timedelta
-    try:
-        from pykrx import stock
-        today = date.today()
-        date_str = today.strftime("%Y%m%d")
-        week_ago = (today - timedelta(days=7)).strftime("%Y%m%d")
+    prices: list[float] = []
 
-        # KOSPI 200 선물 종목 목록 조회 (KRX 코드 "101"로 시작)
-        tickers = stock.get_futures_ticker_list(date_str)
-        k200 = sorted([t for t in tickers if t.startswith("101")])
-        if not k200:
-            logger.debug("pykrx: 코스피200선물 종목 없음 (date=%s)", date_str)
-            return None, None
+    # 최근 5영업일을 커버하기 위해 최대 7일 전까지 역순으로 시도
+    for delta in range(7):
+        trade_date = (date.today() - timedelta(days=delta)).strftime("%Y%m%d")
+        try:
+            resp = requests.post(
+                "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd",
+                data={
+                    "bld":      "dbms/MDC/STAT/standard/MDCSTAT13001",
+                    "locale":   "ko_KR",
+                    "trdDd":    trade_date,
+                    "mktId":    "F",
+                    "prodId":   "F102",
+                    "pagePath": "/contents/MDC/MAIN/main/MDCMAIN001.cmd",
+                },
+                headers=_KRX_HEADERS,
+                timeout=10,
+            )
+            resp.raise_for_status()
+            items = resp.json().get("output", [])
+            for item in items:
+                # 최근월물: 거래대금이 가장 큰 항목
+                raw = (
+                    item.get("trdPrc")
+                    or item.get("clsPrc")
+                    or item.get("CLSPRC")
+                    or item.get("closPrc")
+                )
+                if raw:
+                    prices.append(float(str(raw).replace(",", "")))
+                    break   # 첫 번째 항목(최근월물) 하나만 사용
 
-        front = k200[0]  # 최근월물
-        logger.debug("pykrx 코스피200선물 최근월물 티커: %s", front)
+            if prices:
+                if len(prices) >= 2:
+                    break   # 이미 이틀치 확보
+                # 아직 전날치가 없으면 다음 날짜도 계속 시도
+        except Exception as e:
+            logger.warning("KRX API 호출 실패 (date=%s): %s", trade_date, e)
 
-        df = stock.get_futures_ohlcv_by_date(week_ago, date_str, front)
-        if df is not None and not df.empty:
-            closes = df["종가"].dropna()
-            if len(closes) >= 2:
-                return float(closes.iloc[-1]), float(closes.iloc[-2])
-            if len(closes) == 1:
-                return float(closes.iloc[-1]), None
-    except Exception as e:
-        logger.debug("pykrx KOSPI200선물 조회 실패: %s", e)
+    if len(prices) >= 2:
+        return prices[0], prices[1]
+    if len(prices) == 1:
+        return prices[0], None
     return None, None
 
 
@@ -139,8 +170,8 @@ def fetch_all() -> List[AssetPrice]:
             )
         results.append(ap)
 
-    # KOSPI 200 선물 — pykrx (실거래 데이터, 장중만 유효)
-    price, prev = _fetch_kospi200_futures_pykrx()
+    # KOSPI 200 선물 — KRX API (실거래 데이터, 장중만 유효)
+    price, prev = _fetch_kospi200_futures_krx()
     results.append(AssetPrice(
         name="KOSPI200선물",
         unit="pt",
