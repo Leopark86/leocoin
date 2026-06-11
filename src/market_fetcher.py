@@ -96,38 +96,52 @@ _KRX_HEADERS = {
 
 def _krx_fetch_one_day(trade_date: str) -> Optional[float]:
     """KRX API에서 특정 날짜 KOSPI200선물 종가 하나 반환. 실패 시 None."""
-    # 시도할 파라미터 조합 (bld 별로 필요 파라미터가 다름)
     attempts = [
-        # 파생상품 일별시세 — 최소 파라미터
         {"bld": "dbms/MDC/STAT/standard/MDCSTAT13001",
          "locale": "ko_KR", "trdDd": trade_date, "mktId": "F"},
-        # 파라미터 없이 날짜만
         {"bld": "dbms/MDC/STAT/standard/MDCSTAT13001",
          "locale": "ko_KR", "trdDd": trade_date},
-        # 다른 bld 값 시도
         {"bld": "dbms/MDC/STAT/standard/MDCSTAT13501",
          "locale": "ko_KR", "trdDd": trade_date},
     ]
     for params in attempts:
+        bld = params["bld"]
         try:
             resp = requests.post(
                 "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd",
                 data=params, headers=_KRX_HEADERS, timeout=10,
             )
             if resp.status_code != 200:
+                logger.warning("KRX API HTTP %d (bld=%s, date=%s)",
+                               resp.status_code, bld, trade_date)
                 continue
-            items = resp.json().get("output", [])
+
+            body = resp.json()
+            items = body.get("output", [])
+
+            if not items:
+                # 응답은 왔지만 output 없음 — 키 목록 로그
+                logger.warning("KRX API output 없음 (bld=%s, date=%s) 키: %s",
+                               bld, trade_date, list(body.keys()))
+                continue
+
+            # 첫 실행 시 응답 구조 확인용 로그 (다음 배포 후 제거 가능)
+            logger.warning("KRX API 응답 샘플 (bld=%s, date=%s, 항목수=%d): %s",
+                           bld, trade_date, len(items), str(items[0])[:300])
+
             for item in items:
-                # 상품명/코드로 KOSPI200선물 필터
-                nm = (item.get("prodNm") or item.get("itemNm") or "").replace(" ", "")
-                pid = item.get("prodId") or item.get("itemCode") or ""
+                nm = (item.get("prodNm") or item.get("itemNm") or
+                      item.get("PROD_NM") or "").replace(" ", "")
+                pid = (item.get("prodId") or item.get("itemCode") or
+                       item.get("PROD_ID") or item.get("ISU_CD") or "")
                 if "코스피200선물" in nm or "F102" in pid or pid.startswith("101"):
-                    raw = (item.get("trdPrc") or item.get("clsPrc")
-                           or item.get("closPrc") or item.get("tddClsprc"))
-                    if raw:
-                        return float(str(raw).replace(",", ""))
-        except Exception:
-            continue
+                    for key in ("trdPrc", "clsPrc", "closPrc", "tddClsprc",
+                                "TDD_CLSPRC", "CLSPRC"):
+                        raw = item.get(key)
+                        if raw:
+                            return float(str(raw).replace(",", ""))
+        except Exception as e:
+            logger.warning("KRX API 예외 (bld=%s, date=%s): %s", bld, trade_date, e)
     return None
 
 
