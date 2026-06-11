@@ -1,12 +1,8 @@
 name: 시장 데이터 알림
 
 on:
-  schedule:
-    # 매시 5분 실행 (분은 UTC/KST 동일 — KST도 매시 05분)
-    # 정각(0분)은 GitHub Actions 전 세계 혼잡 시간대라 드랍되는 경우가 많음
-    - cron: "5 * * * *"
   workflow_dispatch:
-    # 수동 실행 (테스트용)
+    # cron-job.org 에서 매시 호출 (또는 수동 테스트용)
 
 jobs:
   send-market-update:
