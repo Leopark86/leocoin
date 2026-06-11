@@ -17,8 +17,8 @@ ASSETS: list[tuple[str, str, str, float]] = [
     ("^TNX",     "미국채 10년",    "%",       1.0),
     ("BTC-USD",  "비트코인",       "USD",     1.0),
     ("GC=F",     "금",             "USD/oz",  1.0),
-    ("^KS11",    "KOSPI",          "pt",      1.0),
-    ("^KS200",   "KOSPI200선물",   "pt",      1.0),
+    ("^KS11",    "KOSPI",           "pt",      1.0),
+    ("^KS200",   "KOSPI200 (현물)", "pt",      1.0),
 ]
 
 
@@ -80,6 +80,40 @@ def _fetch_one(ticker_str: str) -> tuple[Optional[float], Optional[float]]:
     return None, None
 
 
+def _fetch_kospi200_futures_pykrx() -> tuple[Optional[float], Optional[float]]:
+    """
+    pykrx로 KOSPI 200 선물 최근월물 종가 조회.
+    KRX 장중(09:00~15:45 KST) 데이터만 가능, 야간선물은 미지원.
+    """
+    from datetime import date, timedelta
+    try:
+        from pykrx import stock
+        today = date.today()
+        date_str = today.strftime("%Y%m%d")
+        week_ago = (today - timedelta(days=7)).strftime("%Y%m%d")
+
+        # KOSPI 200 선물 종목 목록 조회 (KRX 코드 "101"로 시작)
+        tickers = stock.get_futures_ticker_list(date_str)
+        k200 = sorted([t for t in tickers if t.startswith("101")])
+        if not k200:
+            logger.debug("pykrx: 코스피200선물 종목 없음 (date=%s)", date_str)
+            return None, None
+
+        front = k200[0]  # 최근월물
+        logger.debug("pykrx 코스피200선물 최근월물 티커: %s", front)
+
+        df = stock.get_futures_ohlcv_by_date(week_ago, date_str, front)
+        if df is not None and not df.empty:
+            closes = df["종가"].dropna()
+            if len(closes) >= 2:
+                return float(closes.iloc[-1]), float(closes.iloc[-2])
+            if len(closes) == 1:
+                return float(closes.iloc[-1]), None
+    except Exception as e:
+        logger.debug("pykrx KOSPI200선물 조회 실패: %s", e)
+    return None, None
+
+
 def fetch_all() -> List[AssetPrice]:
     """모든 자산의 현재가 수집"""
     results: List[AssetPrice] = []
@@ -104,4 +138,15 @@ def fetch_all() -> List[AssetPrice]:
                 error=str(e)[:120],
             )
         results.append(ap)
+
+    # KOSPI 200 선물 — pykrx (실거래 데이터, 장중만 유효)
+    price, prev = _fetch_kospi200_futures_pykrx()
+    results.append(AssetPrice(
+        name="KOSPI200선물",
+        unit="pt",
+        price=price,
+        prev_close=prev,
+        multiplier=1.0,
+    ))
+
     return results
