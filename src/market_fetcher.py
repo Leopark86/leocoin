@@ -21,6 +21,7 @@ ASSETS: list[tuple[str, str, str, float]] = [
     ("GC=F",     "금",             "USD/oz",  1.0),
     ("^KS11",    "KOSPI",           "pt",      1.0),
     ("^KS200",   "KOSPI200 (현물)", "pt",      1.0),
+    ("EWY",      "EWY",             "USD",     1.0),
 ]
 
 
