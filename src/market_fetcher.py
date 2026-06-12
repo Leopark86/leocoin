@@ -145,8 +145,67 @@ def _krx_fetch_one_day(trade_date: str) -> Optional[float]:
     return None
 
 
+def _fetch_kospi200_futures_yf() -> tuple[Optional[float], Optional[float]]:
+    """Yahoo Finance CME KOSPI200 선물 티커 시도"""
+    # CME Micro/Mini KOSPI 200 futures: KM=F, KO=F, KP=F, KS=F
+    for ticker in ["KM=F", "KO=F", "KP=F", "KS=F"]:
+        try:
+            price, prev = _fetch_one(ticker)
+            if price is not None and price > 0:
+                logger.warning("KOSPI200선물 Yahoo Finance 성공: %s = %.2f", ticker, price)
+                return price, prev
+        except Exception as e:
+            logger.debug("Yahoo Finance KOSPI200선물 실패 (%s): %s", ticker, e)
+    logger.warning("Yahoo Finance: KOSPI200선물 데이터 없음 (KM=F, KO=F, KP=F, KS=F 모두 실패)")
+    return None, None
+
+
+def _fetch_kospi200_futures_naver() -> tuple[Optional[float], Optional[float]]:
+    """Naver Finance API로 KOSPI200 선물 조회"""
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Referer": "https://finance.naver.com",
+    }
+    # Naver Finance 선물 API 엔드포인트 후보
+    endpoints = [
+        "https://m.stock.naver.com/api/domestic/index/KOSPI200/futures",
+        "https://m.stock.naver.com/api/stock/futures/101T3000/basic",
+        "https://finance.naver.com/sise/futures_index.naver?code=KOSPI200",
+    ]
+    for url in endpoints:
+        try:
+            resp = requests.get(url, headers=headers, timeout=10)
+            logger.warning("Naver API 응답 (url=%s, status=%d): %.300s",
+                           url, resp.status_code, resp.text)
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+            # 응답 구조 탐색
+            for key in ("closePrice", "price", "closeValue", "currentPrice",
+                        "lastPrice", "tddClsprc", "clsprc"):
+                val = data.get(key)
+                if val is not None:
+                    try:
+                        price = float(str(val).replace(",", ""))
+                        if price > 0:
+                            prev_val = data.get("previousClosePrice") or data.get("prevClosePrice")
+                            prev = float(str(prev_val).replace(",", "")) if prev_val else None
+                            logger.warning("Naver API KOSPI200선물 성공: %.2f (key=%s)", price, key)
+                            return price, prev
+                    except (ValueError, TypeError):
+                        continue
+        except Exception as e:
+            logger.debug("Naver API 실패 (%s): %s", url, e)
+    logger.warning("Naver API: KOSPI200선물 데이터 없음")
+    return None, None
+
+
 def _fetch_kospi200_futures_krx() -> tuple[Optional[float], Optional[float]]:
-    """KRX API → FDR 순으로 KOSPI200선물 최근월물 종가 조회"""
+    """KRX API → FDR → Yahoo Finance → Naver 순으로 KOSPI200선물 최근월물 종가 조회"""
     # 1차: KRX 데이터포털
     prices: list[float] = []
     for delta in range(7):
@@ -177,14 +236,17 @@ def _fetch_kospi200_futures_krx() -> tuple[Optional[float], Optional[float]]:
                 continue
         logger.warning("FDR: 코스피200선물 데이터 없음")
     except ImportError:
-        logger.warning("FinanceDataReader 미설치 — pip install finance-datareader")
+        pass
     except Exception as e:
         logger.warning("FDR 조회 실패: %s", e)
 
-    return None, None
-    if len(prices) == 1:
-        return prices[0], None
-    return None, None
+    # 3차: Yahoo Finance CME 티커
+    result = _fetch_kospi200_futures_yf()
+    if result[0] is not None:
+        return result
+
+    # 4차: Naver Finance API
+    return _fetch_kospi200_futures_naver()
 
 
 def fetch_all() -> List[AssetPrice]:
@@ -212,7 +274,7 @@ def fetch_all() -> List[AssetPrice]:
             )
         results.append(ap)
 
-    # KOSPI 200 선물 — KRX API (실거래 데이터, 장중만 유효)
+    # KOSPI 200 선물 — KRX/FDR/YF/Naver 순으로 조회
     price, prev = _fetch_kospi200_futures_krx()
     results.append(AssetPrice(
         name="KOSPI200선물",
