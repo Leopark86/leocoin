@@ -22,6 +22,9 @@ ASSETS: list[tuple[str, str, str, float]] = [
     ("^KS11",    "KOSPI",           "pt",      1.0),
     ("^KS200",   "KOSPI200 (현물)", "pt",      1.0),
     ("EWY",      "EWY",             "USD",     1.0),
+    ("^IXIC",    "나스닥",          "pt",      1.0),
+    ("^GSPC",    "S&P500",          "pt",      1.0),
+    ("^DJI",     "다우존스",        "pt",      1.0),
 ]
 
 
