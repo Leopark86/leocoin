@@ -1,8 +1,12 @@
 name: 시장 데이터 알림
 
 on:
+  schedule:
+    - cron: "0 0 * * *"   # 오전 09:00 KST
+    - cron: "0 7 * * *"   # 오후 04:00 KST
+    - cron: "0 13 * * *"  # 오후 10:00 KST
   workflow_dispatch:
-    # cron-job.org 에서 매시 호출 (또는 수동 테스트용)
+    # 수동 테스트 또는 cron-job.org 외부 호출용
 
 jobs:
   send-market-update:
